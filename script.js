@@ -1,14 +1,26 @@
 class ChatBot {
   constructor() {
     // API Configuration
-    this.API_KEY = "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";
+    this.API_KEY = "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";
     this.API_URL = "https://openrouter.ai/api/v1/chat/completions";
     this.IMAGE_API_URL = "https://openrouter.ai/api/v1/images/generations";
     
-    // Free models
-    this.MODEL = "deepseek/deepseek-r1-0528:free";
-    this.IMAGE_MODEL = "stability-ai/sdxl:free"; // Free image model
+    // Available models with fallbacks
+    this.MODELS = [
+      "deepseek/deepseek-r1-0528:free",
+      "meta-llama/llama-3-8b-instruct:free",
+      "google/gemma-7b-it:free"
+    ];
     
+    this.IMAGE_MODELS = [
+      "stability-ai/sdxl:free",
+      "playgroundai/playground-v2:free"
+    ];
+    
+    // Rate limiting
+    this.lastAPICallTime = 0;
+    this.minRequestInterval = 1000; // 1 second between requests
+
     // DOM elements
     this.chatMessages = document.getElementById("chatMessages");
     this.messageInput = document.getElementById("messageInput");
@@ -18,6 +30,8 @@ class ChatBot {
     this.loadHistory = document.getElementById("loadHistory");
     this.clearHistory = document.getElementById("clearHistory");
     this.typingIndicator = document.getElementById("typingIndicator");
+    this.modelSelect = document.getElementById("modelSelect");
+    this.imageModelSelect = document.getElementById("imageModelSelect");
 
     this.messageHistory = [];
     this.initializeEventListeners();
@@ -213,6 +227,8 @@ class ChatBot {
     this.saveHistory.disabled = true;
     this.loadHistory.disabled = true;
     this.clearHistory.disabled = true;
+    this.modelSelect.disabled = true;
+    this.imageModelSelect.disabled = true;
   }
 
   enableInput() {
@@ -222,6 +238,8 @@ class ChatBot {
     this.saveHistory.disabled = false;
     this.loadHistory.disabled = false;
     this.clearHistory.disabled = false;
+    this.modelSelect.disabled = false;
+    this.imageModelSelect.disabled = false;
     this.messageInput.focus();
   }
 
@@ -252,7 +270,7 @@ class ChatBot {
     } catch (error) {
       console.error("Error calling API:", error);
       this.addMessage(
-        "Sorry, I encountered an error. Please try again.",
+        `Sorry, I encountered an error: ${error.message}. Please try again.`,
         false
       );
     } finally {
@@ -304,70 +322,132 @@ class ChatBot {
     }
   }
 
-  async callAPI() {
-    const response = await fetch(this.API_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${this.API_KEY}`,
-        "HTTP-Referer": window.location.origin,
-        "X-Title": "DeepSeek Chatbot",
-      },
-      body: JSON.stringify({
-        model: this.MODEL,
-        messages: [
-          {
-            role: "system",
-            content:
-              "You are a helpful AI assistant. Provide clear, concise, and helpful responses. Format your responses with proper markdown when appropriate.",
-          },
-          ...this.messageHistory,
-        ],
-        max_tokens: 2000,
-        temperature: 0.7,
-      }),
-    });
-
-    if (!response.ok) {
-      const errorData = await response.json();
-      throw new Error(
-        `API Error: ${response.status} - ${
-          errorData.error?.message || "Unknown error"
-        }`
+  async callAPI(retryCount = 0) {
+    // Rate limiting
+    const now = Date.now();
+    if (now - this.lastAPICallTime < this.minRequestInterval) {
+      await new Promise(resolve => 
+        setTimeout(resolve, this.minRequestInterval - (now - this.lastAPICallTime))
       );
     }
+    this.lastAPICallTime = Date.now();
 
-    return await response.json();
+    try {
+      const currentModel = this.modelSelect.value;
+      const response = await fetch(this.API_URL, {
+        method: "POST",
+headers: {
+  "Content-Type": "application/json",
+  "Authorization": `Bearer ${this.API_KEY}`,
+  "HTTP-Referer": window.location.href, // More specific than origin
+  "X-Title": "DeepSeek Chatbot",
+  // OpenRouter often requires these additional headers:
+  "Accept": "application/json",
+  "User-Agent": "Your-App-Name/1.0"
+},
+
+        body: JSON.stringify({
+          model: currentModel,
+          messages: [
+            {
+              role: "system",
+              content:
+                "You are a helpful AI assistant. Provide clear, concise, and helpful responses. Format your responses with proper markdown when appropriate.",
+            },
+            ...this.messageHistory,
+          ],
+          max_tokens: 2000,
+          temperature: 0.7,
+        }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        
+        // Try next model if available
+        if (retryCount < this.MODELS.length - 1) {
+          this.modelSelect.selectedIndex = (this.modelSelect.selectedIndex + 1) % this.MODELS.length;
+          return this.callAPI(retryCount + 1);
+        }
+        
+        throw new Error(
+          `API Error: ${response.status} - ${
+            errorData.error?.message || "Unknown error"
+          }`
+        );
+      }
+
+      return await response.json();
+    } catch (error) {
+      console.error("API call failed:", error);
+      
+      // Try next model if available
+      if (retryCount < this.MODELS.length - 1) {
+        this.modelSelect.selectedIndex = (this.modelSelect.selectedIndex + 1) % this.MODELS.length;
+        return this.callAPI(retryCount + 1);
+      }
+      
+      throw error;
+    }
   }
 
-  async callImageAPI(prompt) {
-    const response = await fetch(this.IMAGE_API_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${this.API_KEY}`,
-        "HTTP-Referer": window.location.origin,
-        "X-Title": "DeepSeek Chatbot",
-      },
-      body: JSON.stringify({
-        model: this.IMAGE_MODEL,
-        prompt: prompt,
-        n: 1,
-        size: "512x512", // Smaller size for free tier
-        steps: 20, // Lower steps for faster generation
-      }),
-    });
+  async callImageAPI(prompt, retryCount = 0) {
+    try {
+      const currentModel = this.imageModelSelect.value;
+      const response = await fetch(this.IMAGE_API_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${this.API_KEY}`,
+          "HTTP-Referer": window.location.origin,
+          "X-Title": "DeepSeek Chatbot",
+        },
+        body: JSON.stringify({
+          model: currentModel,
+          prompt: prompt,
+          n: 1,
+          size: "512x512",
+          steps: 20,
+        }),
+      });
 
-    if (!response.ok) {
-      const errorData = await response.json();
-      throw new Error(
-        `API Error: ${response.status} - ${
-          errorData.error?.message || "Unknown error"
-        }`
-      );
+      if (!response.ok) {
+        const errorData = await response.json();
+        
+        // Try next image model if available
+        if (retryCount < this.IMAGE_MODELS.length - 1) {
+          this.imageModelSelect.selectedIndex = (this.imageModelSelect.selectedIndex + 1) % this.IMAGE_MODELS.length;
+          return this.callImageAPI(prompt, retryCount + 1);
+        }
+        
+        throw new Error(
+          `API Error: ${response.status} - ${
+            errorData.error?.message || "Unknown error"
+          }`
+        );
+      }
+
+      const data = await response.json();
+      
+      // Handle different response formats
+      if (data.data?.[0]?.url) {
+        return data;
+      } else if (data.images?.[0]) {
+        return { data: [{ url: data.images[0] }] };
+      }
+      throw new Error("Unexpected response format");
+      
+    } catch (error) {
+      console.error("Image API call failed:", error);
+      
+      // Try next image model if available
+      if (retryCount < this.IMAGE_MODELS.length - 1) {
+        this.imageModelSelect.selectedIndex = (this.imageModelSelect.selectedIndex + 1) % this.IMAGE_MODELS.length;
+        return this.callImageAPI(prompt, retryCount + 1);
+      }
+      
+      throw error;
     }
-
-    return await response.json();
   }
 
   saveToLocalStorage() {
@@ -428,8 +508,27 @@ class ChatBot {
       this.addMessage("Failed to clear chat history.", false);
     }
   }
+
+  async checkAPIStatus() {
+    try {
+      const response = await fetch("https://openrouter.ai/api/v1/status");
+      const data = await response.json();
+      console.log("API Status:", data);
+      return data.available || false;
+    } catch (error) {
+      console.error("Status check failed:", error);
+      return false;
+    }
+  }
 }
 
 document.addEventListener("DOMContentLoaded", () => {
-  new ChatBot();
+  const chatbot = new ChatBot();
+  
+  // Initial API status check
+  chatbot.checkAPIStatus().then(available => {
+    if (!available) {
+      chatbot.addMessage("Warning: The API service may be experiencing issues. Responses may be delayed.", false);
+    }
+  });
 });

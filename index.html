@@ -22,7 +22,17 @@
     <div class="chat-container">
       <div class="chat-header">
         <h1>DeepSeek Chatbot</h1>
-        <div class="model-info">Model: DeepSeek R1 0528 (Free)</div>
+        <div class="model-selector">
+          <select id="modelSelect" class="model-dropdown">
+            <option value="deepseek/deepseek-r1-0528:free">DeepSeek R1 (Free)</option>
+            <option value="meta-llama/llama-3-8b-instruct:free">Llama 3 8B (Free)</option>
+            <option value="google/gemma-7b-it:free">Gemma 7B (Free)</option>
+          </select>
+          <select id="imageModelSelect" class="model-dropdown">
+            <option value="stability-ai/sdxl:free">SDXL (Free)</option>
+            <option value="playgroundai/playground-v2:free">Playground v2 (Free)</option>
+          </select>
+        </div>
       </div>
 
       <div class="chat-messages" id="chatMessages">
